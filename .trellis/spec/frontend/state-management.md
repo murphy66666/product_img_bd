@@ -1,6 +1,6 @@
 ﻿# State Management
 
-The frontend uses Pinia option stores in `src/stores/`. State is persisted directly to browser `localStorage`.
+The frontend uses Pinia option stores in `src/stores/`. Durable state is persisted to browser storage with explicit keys.
 
 ## Stores
 
@@ -10,14 +10,14 @@ Store id: `auth`
 
 State:
 
-- `isLoggedIn`: initialized from `localStorage.isLoggedIn === "true"`
-- `user`: parsed from `localStorage.user`, or `null`
+- `isLoggedIn`: initialized from whether stored `authToken` and `authUser` both exist and parse successfully
+- `user`: parsed from stored `authUser`, or `null`
 - `theme`: `dark` or `light`, initialized from `localStorage.theme` with `dark` default
 
 Actions:
 
-- `login(method, username?)`: sets demo user data and writes login/user state to localStorage.
-- `logout()`: clears login/user state but leaves theme intact.
+- `login(username, password, rememberMe?)`: calls backend auth, sets the bearer token, and stores `authToken`/`authUser` in localStorage when remembered or sessionStorage otherwise.
+- `logout()`: calls backend logout, clears auth storage from both localStorage and sessionStorage, and leaves theme intact.
 - `toggleTheme()`: toggles and persists theme.
 
 ### `chat.ts`
@@ -55,15 +55,20 @@ Actions:
 
 Current localStorage keys:
 
-- `isLoggedIn`
-- `user`
+- `authToken`
+- `authUser`
 - `theme`
 - `rememberedPhone`
 - `chat_sessions`
 - `active_session_id`
 - `gallery_images`
 
-When changing these keys, provide migration or clear fallback behavior. Existing users can have old data in the browser.
+Current sessionStorage keys:
+
+- `authToken`
+- `authUser`
+
+When changing these keys, provide migration or clear fallback behavior. Existing users can have old data in the browser. If adding a token-backed auth flow, remember that an in-memory API client token must be rehydrated from storage during store initialization.
 
 ## Mutation Rules
 

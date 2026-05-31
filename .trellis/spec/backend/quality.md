@@ -1,81 +1,40 @@
-# Pre-commit Checklist
+﻿# Backend Quality Checklist
 
-Run through this checklist before committing backend code.
+Use this checklist after backend changes.
 
-## Type Safety
+## Current Source Status
 
-- [ ] **No non-null assertions (`!`)** - Use local variables and conditionals for type narrowing
-- [ ] **All API inputs have Zod schemas** - Defined in `types.ts`
-- [ ] **All API outputs have Zod schemas** - Including `success` and `reason` fields
-- [ ] **Enums imported from `@your-app/utils`** - Not from database package
+No FastAPI application source exists yet in `D:\g-code\backend`. Until it is scaffolded, backend code verification commands are expected targets rather than runnable commands.
 
-## Database Operations
+## Expected Commands After Scaffold
 
-- [ ] **No `await` in loops** - Use `inArray` for batch queries
-- [ ] **Batch inserts used** - Not individual inserts in loops
-- [ ] **Conflict handling considered** - Use `onConflictDoUpdate` when appropriate
-- [ ] **JSON columns cast properly** - `::jsonb` for jsonb functions
-- [ ] **Raw SQL column names quoted** - Double quotes for camelCase columns
-
-## Logging
-
-- [ ] **No `console.log`** - Use `logger` from `@your-app/logs`
-- [ ] **Structured logging used** - Pass objects, not string interpolation
-- [ ] **Errors logged with context** - Include relevant IDs and stack traces
-- [ ] **Sensitive data excluded** - No passwords, tokens, or PII in logs
-
-## Performance
-
-- [ ] **Parallel execution where possible** - Use `Promise.all` for independent operations
-- [ ] **Concurrency control for external APIs** - Use `p-limit` for rate-limited APIs
-- [ ] **Retry logic for rate limits** - Exponential backoff implemented
-- [ ] **Caching considered** - For expensive or frequently accessed data
-
-## Error Handling
-
-- [ ] **Errors properly caught and logged** - With Sentry context when applicable
-- [ ] **Appropriate error codes returned** - `NOT_FOUND`, `FORBIDDEN`, `BAD_REQUEST`, etc.
-- [ ] **Batch operations handle partial failures** - Return detailed error information
-
-## Code Organization
-
-- [ ] **Code in correct location** - Procedures, lib, types in right directories
-- [ ] **Reusable logic extracted** - Shared code in `lib/` directory
-- [ ] **Naming conventions followed** - Schemas, types, functions named correctly
-
-## Quick Reference
-
-### Response Format
-```typescript
-return {
-  success: true,
-  reason: "Operation completed successfully",
-  // additional fields
-};
+```bash
+python -m compileall app
+python -m pytest
+uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
-### Batch Query Pattern
-```typescript
-const items = await db
-  .select()
-  .from(itemTable)
-  .where(inArray(itemTable.parentId, parentIds));
+If a different package name or test runner is chosen, update this file and [index.md](./index.md).
 
-const itemsByParent = groupBy(items, "parentId");
-```
+## Review Checklist
 
-### Logging Pattern
-```typescript
-logger.info("Operation completed", {
-  operationId,
-  userId,
-  itemCount: items.length,
-});
-```
+- FastAPI routes use Pydantic request and response models.
+- Route functions are thin and delegate to services.
+- LangChain/provider calls are isolated behind service modules.
+- MySQL is the production database target; no default SQLite shortcut was introduced.
+- Redis usage has clear TTLs and does not store large image blobs.
+- Watchdog observers start explicitly and have shutdown handling.
+- JSON response shapes are stable and documented.
+- Destructive operations have confirmation, audit logging, and rollback/restoration notes.
+- Database schema changes include forward and rollback SQL.
+- Secrets are read from environment variables and not committed.
 
-### Error Pattern
-```typescript
-if (!resource) {
-  throw new ORPCError("NOT_FOUND", { message: "Resource not found" });
-}
-```
+## Manual Smoke Test Once App Exists
+
+1. Start Uvicorn.
+2. Call `GET /api/v1/health`.
+3. Verify OpenAPI docs load at `/docs` in development.
+4. Exercise auth/login if implemented.
+5. Create a generation job with valid payload.
+6. Verify job status/result response matches the documented schema.
+7. Confirm logs include request id and job id without leaking secrets.

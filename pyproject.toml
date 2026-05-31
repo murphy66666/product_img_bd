@@ -1,0 +1,46 @@
+[project]
+name = "product-image-backend"
+version = "0.1.0"
+description = "FastAPI backend for AI product image generation"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "aiomysql>=0.2.0",
+    "fastapi>=0.115.0",
+    "langchain>=0.3.0",
+    "passlib[bcrypt]>=1.7.4",
+    "pydantic>=2.8.0",
+    "pydantic-settings>=2.4.0",
+    "pyjwt>=2.9.0",
+    "python-dotenv>=1.0.1",
+    "python-multipart>=0.0.9",
+    "redis>=5.0.8",
+    "sqlalchemy>=2.0.32",
+    "uvicorn[standard]>=0.30.6",
+    "watchdog>=4.0.2"
+]
+
+[dependency-groups]
+dev = [
+    "httpx>=0.27.0",
+    "pytest>=8.3.2",
+    "pytest-asyncio>=0.24.0",
+    "ruff>=0.6.3"
+]
+
+[tool.uv]
+package = false
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+exclude = [".codex", ".trellis", ".venv"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["B008", "E501"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+asyncio_mode = "auto"

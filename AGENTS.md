@@ -5,9 +5,9 @@
 这是一个使用大模型生成商品图片的项目，采用前后端分离架构。前端项目在./frontend。后端backend作为前端的接口API支撑。
 
 ## 技术栈
-- 后端：FastAPI + Uvicorn + Langchain
-- 前端：Vue3 + 
-- 数据库：MySQL 
+- 后端：Python3 + FastAPI + Uvicorn + Langchain + UV
+- 前端：Vue3 + Pinia + Ant Design Vue + UnoCSS
+- 数据库：MySQL 8.x.x
 - 缓存：Redis
 - 目录监听：watchdog
 

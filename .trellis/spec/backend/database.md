@@ -1,419 +1,161 @@
-# Database Operations
+﻿# Database Guidelines
 
-This document covers database best practices using Drizzle ORM with PostgreSQL.
+The project standard is MySQL for production persistence. Do not default to SQLite.
 
-## Critical Rules
+## Current Status
 
-### 1. NO `await` in Loops (N+1 Problem)
+No backend app source, ORM models, or migration files exist yet. Database work must start by choosing and documenting the MySQL access layer.
 
-Never use `await` inside a loop. This creates the N+1 query problem, causing severe performance degradation.
+## Recommended Choices
 
-```typescript
-// BAD - N+1 queries (1 query per iteration)
-const orders = await db.select().from(orderTable).where(eq(orderTable.userId, userId));
-for (const order of orders) {
-  const items = await db.select().from(orderItemTable).where(eq(orderItemTable.orderId, order.id));
-  order.items = items;
-}
+FastAPI-compatible options:
 
-// GOOD - 2 queries total using inArray
-const orders = await db.select().from(orderTable).where(eq(orderTable.userId, userId));
-const orderIds = orders.map(o => o.id);
+- SQLAlchemy 2.x async engine with `asyncmy` or `aiomysql`
+- Alembic for migrations
+- Pydantic schemas for API contracts, separate from ORM models
 
-// Single query for all items
-const allItems = await db
-  .select()
-  .from(orderItemTable)
-  .where(inArray(orderItemTable.orderId, orderIds));
+If another MySQL library is chosen, update this file with the concrete session, migration, and transaction patterns.
 
-// Group items by orderId in memory
-const itemsByOrder = new Map<string, typeof allItems>();
-for (const item of allItems) {
-  const existing = itemsByOrder.get(item.orderId) || [];
-  existing.push(item);
-  itemsByOrder.set(item.orderId, existing);
-}
+## Connection Rules
 
-// Attach to orders
-const ordersWithItems = orders.map(order => ({
-  ...order,
-  items: itemsByOrder.get(order.id) || [],
-}));
+- Read database URL from environment, not source code.
+- Use MySQL in development/test unless a test-only substitute is explicitly documented.
+- Create database engines and pools during app startup/lifespan, not at import time.
+- Use dependency providers for sessions.
+- Close sessions and connections reliably.
+
+## Migration Rules
+
+Any database schema change must include:
+
+- Complete forward SQL or Alembic migration.
+- Complete rollback SQL or downgrade migration.
+- Impact notes for existing data.
+- Verification query.
+
+Example SQL shape:
+
+```sql
+ALTER TABLE generation_jobs
+  ADD COLUMN status VARCHAR(32) NOT NULL DEFAULT 'pending';
+
+-- rollback
+ALTER TABLE generation_jobs
+  DROP COLUMN status;
 ```
 
-### 2. Batch Insert Pattern
+## Transaction Rules
 
-Use batch inserts for multiple records instead of individual inserts.
+Use transactions for workflows that create or update multiple related records, such as:
 
-```typescript
-// BAD - Multiple insert statements
-for (const item of items) {
-  await db.insert(orderItemTable).values(item);
-}
+- generation job record plus generated image records
+- user balance deduction plus job creation
+- deletion/audit log pairs
 
-// GOOD - Single batch insert
-await db.insert(orderItemTable).values(items);
+Do not mix external AI calls inside long database transactions. Store a pending job, commit, run external work, then update status/results.
 
-// With returning clause
-const insertedItems = await db
-  .insert(orderItemTable)
-  .values(items)
-  .returning();
+## Query Rules
+
+- Avoid N+1 queries. Batch by IDs where possible.
+- Select only needed columns for list endpoints.
+- Use indexes for user id, job status, created time, and lookup keys.
+- Paginate gallery and job-history endpoints.
+- Never build SQL through string concatenation with user input.
+
+## Destructive Operations
+
+For delete/clear operations:
+
+- Require user confirmation at the API or UI boundary.
+- Write an operation log/audit row where applicable.
+- Prefer soft delete for user-visible generated assets unless hard delete is explicitly required.
+- Provide a rollback or restoration plan.
+
+## Scenario: Demo User Data Removal
+
+### 1. Scope / Trigger
+- Trigger: Production cleanup of `users.id = 'u-demo'` and all records owned by that user while preserving `users.id = 'admin'`.
+
+### 2. Signatures
+- Forward SQL: `app/db/migrations/002_remove_demo_user_data.sql`
+- Rollback SQL: `app/db/migrations/002_remove_demo_user_data_rollback.sql`
+- Affected tables: `users`, `generation_sessions`, `generation_messages`, `generation_jobs`, `generated_images`, `operation_logs`.
+
+### 3. Contracts
+- Cleanup SQL must check that `admin` exists before deleting demo data.
+- Backup tables named `backup_002_demo_*` must be populated before deletion.
+- Deletion order must respect foreign keys: images, messages, jobs, sessions, logs, then user.
+- Cleanup must write an `operation_logs` audit row after deleting `u-demo`.
+
+### 4. Validation & Error Matrix
+- Confirmation variable mismatch -> SQL `SIGNAL` aborts.
+- Missing `admin` user -> SQL `SIGNAL` aborts.
+- Backup tables missing during rollback -> rollback fails visibly instead of pretending data was restored.
+
+### 5. Good/Base/Bad Cases
+- Good: preflight counts reviewed, `admin` count is 1, cleanup leaves zero `u-demo` owned rows.
+- Base: no `u-demo` rows exist, script records cleanup and leaves `admin` untouched.
+- Bad: `DELETE FROM users WHERE id <> 'admin'` deletes non-demo production users.
+
+### 6. Tests Required
+- Auth regression test that demo login no longer creates `u-demo`.
+- Migration review must verify the final SELECT reports zero demo users, sessions, jobs, and images.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+```sql
+DELETE FROM users WHERE id <> 'admin';
 ```
 
-### 3. Conflict Handling with `onConflictDoUpdate`
-
-Handle upserts efficiently with conflict resolution.
-
-```typescript
-// Upsert single record
-await db
-  .insert(userSettingsTable)
-  .values({
-    userId,
-    theme: "dark",
-    notifications: true,
-  })
-  .onConflictDoUpdate({
-    target: userSettingsTable.userId,
-    set: {
-      theme: sql`excluded.theme`,
-      notifications: sql`excluded.notifications`,
-      updatedAt: sql`NOW()`,
-    },
-  });
-
-// Batch upsert with composite key
-const upsertedRecords = await db
-  .insert(inventoryTable)
-  .values(inventoryData)
-  .onConflictDoUpdate({
-    target: [inventoryTable.warehouseId, inventoryTable.productId],
-    set: {
-      quantity: sql`excluded.quantity`,
-      updatedAt: sql`NOW()`,
-    },
-  })
-  .returning({
-    id: inventoryTable.id,
-    productId: inventoryTable.productId,
-  });
+#### Correct
+```sql
+DELETE FROM generated_images WHERE user_id = 'u-demo';
+DELETE FROM users WHERE id = 'u-demo';
 ```
 
-## Query Organization
+## Scenario: Smart Templates Table
 
-Database queries should be organized in `packages/database/drizzle/queries/`.
+### 1. Scope / Trigger
+- Trigger: Smart templates are database-backed configuration used by the Vue workbench.
 
-```
-packages/database/drizzle/queries/
-├── index.ts          # Re-exports all query modules
-├── types.ts          # Shared query types
-├── users.ts          # User-related queries
-├── orders.ts         # Order-related queries
-└── products.ts       # Product-related queries
-```
+### 2. Signatures
+- Table: `smart_templates`
+- Key fields: `id`, `name`, `image_url`, `prompt`, `model`, `aspect_ratio`, `resolution`, `quantity`, `type`, `sort_order`, `is_enabled`.
+- API filter: `GET /api/v1/templates?type=1|2`.
 
-**Example: `queries/orders.ts`**
+### 3. Contracts
+- `type=1` means product main image templates.
+- `type=2` means product detail image templates.
+- Queries must filter `is_enabled = 1` and sort by `sort_order ASC, created_at DESC`.
+- Frontend response fields use camelCase (`imageUrl`, `aspectRatio`) even though DB columns are snake_case.
 
-```typescript
-import { and, desc, eq, inArray, sql } from "drizzle-orm";
-import { db } from "../client";
-import { order as orderTable, orderItem as orderItemTable } from "../schema/postgres";
+### 4. Validation & Error Matrix
+- `type` outside `1|2` -> FastAPI returns `422`.
+- Empty table -> return an empty `templates` list, not mock rows.
+- Disabled row (`is_enabled=0`) -> excluded from API results.
 
-/**
- * Bulk upsert orders with conflict handling
- */
-export async function bulkUpsertOrders(
-  ordersData: Array<{
-    externalId: string;
-    customerId: string;
-    status: string;
-    total: number;
-  }>,
-) {
-  if (ordersData.length === 0) {
-    return [];
-  }
+### 5. Good/Base/Bad Cases
+- Good: `type=2` returns only detail image templates.
+- Base: no `type` filter can return all enabled templates for admin-style consumers.
+- Bad: frontend hard-codes template data and drifts from database-managed prompts.
 
-  const upserted = await db
-    .insert(orderTable)
-    .values(ordersData)
-    .onConflictDoUpdate({
-      target: [orderTable.externalId],
-      set: {
-        status: sql`excluded.status`,
-        total: sql`excluded.total`,
-        updatedAt: sql`NOW()`,
-      },
-    })
-    .returning({
-      id: orderTable.id,
-      externalId: orderTable.externalId,
-    });
+### 6. Tests Required
+- Route test for successful filtered list.
+- Route test for invalid `type`.
+- Migration includes forward table/seed SQL and rollback `DROP TABLE`.
 
-  return upserted;
-}
+### 7. Wrong vs Correct
 
-/**
- * Get orders with items for a user
- */
-export async function getOrdersWithItems(params: {
-  userId: string;
-  limit?: number;
-}) {
-  const { userId, limit = 20 } = params;
-
-  const orders = await db
-    .select()
-    .from(orderTable)
-    .where(eq(orderTable.userId, userId))
-    .orderBy(desc(orderTable.createdAt))
-    .limit(limit);
-
-  if (orders.length === 0) {
-    return [];
-  }
-
-  const orderIds = orders.map(o => o.id);
-  const items = await db
-    .select()
-    .from(orderItemTable)
-    .where(inArray(orderItemTable.orderId, orderIds));
-
-  const itemsByOrder = groupBy(items, "orderId");
-
-  return orders.map(order => ({
-    ...order,
-    items: itemsByOrder.get(order.id) || [],
-  }));
-}
+#### Wrong
+```sql
+SELECT * FROM smart_templates;
 ```
 
-## Advanced SQL Patterns
-
-### JSON Column Operations
-
-When using PostgreSQL JSON/JSONB columns, proper casting is required for JSON functions.
-
-```typescript
-// BAD - Missing cast for jsonb functions
-const result = await db
-  .select()
-  .from(productTable)
-  .where(sql`${productTable.metadata}->>'category' = 'electronics'`);
-
-// GOOD - Explicit cast for jsonb operations
-const result = await db
-  .select()
-  .from(productTable)
-  .where(sql`${productTable.metadata}::jsonb->>'category' = 'electronics'`);
-
-// JSON array contains check
-const withTag = await db
-  .select()
-  .from(productTable)
-  .where(sql`${productTable.tags}::jsonb ? 'featured'`);
-
-// JSON array length
-const withMultipleTags = await db
-  .select()
-  .from(productTable)
-  .where(sql`jsonb_array_length(${productTable.tags}::jsonb) > 3`);
-```
-
-### Raw SQL Column Names (camelCase)
-
-When using raw SQL with Drizzle, column names must use double quotes for camelCase names.
-
-```typescript
-// BAD - PostgreSQL will lowercase unquoted identifiers
-await db.execute(sql`
-  UPDATE order
-  SET lastUpdatedAt = NOW()
-  WHERE userId = ${userId}
-`);
-
-// GOOD - Double quotes preserve camelCase
-await db.execute(sql`
-  UPDATE "order"
-  SET "lastUpdatedAt" = NOW()
-  WHERE "userId" = ${userId}
-`);
-
-// Complex raw SQL example
-await db.execute(sql`
-  UPDATE "order" AS o
-  SET
-    "totalAmount" = sub."calculatedTotal",
-    "updatedAt" = NOW()
-  FROM (
-    SELECT
-      "orderId",
-      SUM("price" * "quantity") AS "calculatedTotal"
-    FROM "orderItem"
-    WHERE "orderId" = ANY(${sql.raw(arrayLiteral)})
-    GROUP BY "orderId"
-  ) AS sub
-  WHERE o.id = sub."orderId"
-`);
-```
-
-### Enum Comparison
-
-When comparing enum columns in raw SQL, cast the column to text.
-
-```typescript
-// BAD - Direct enum comparison may fail
-await db.execute(sql`
-  SELECT * FROM "order"
-  WHERE status != 'DRAFT'
-`);
-
-// GOOD - Cast enum column to text
-await db.execute(sql`
-  SELECT * FROM "order"
-  WHERE status::text != 'DRAFT'
-`);
-
-// In Drizzle query builder (works correctly)
-const orders = await db
-  .select()
-  .from(orderTable)
-  .where(ne(orderTable.status, "DRAFT"));
-```
-
-### Aggregation with Filtering
-
-Use FILTER clause for conditional aggregation.
-
-```typescript
-await db.execute(sql`
-  UPDATE "category" AS c
-  SET
-    "productCount" = sub."count",
-    "activeProductCount" = sub."activeCount",
-    "updatedAt" = NOW()
-  FROM (
-    SELECT
-      "categoryId",
-      COUNT(*)::int AS "count",
-      COUNT(*) FILTER (WHERE "status" = 'ACTIVE')::int AS "activeCount"
-    FROM "product"
-    WHERE "categoryId" = ANY(${sql.raw(categoryIds)})
-    GROUP BY "categoryId"
-  ) AS sub
-  WHERE c.id = sub."categoryId"
-`);
-```
-
-## Transaction Patterns
-
-### Basic Transaction
-
-```typescript
-import { db } from "@your-app/database";
-
-const result = await db.transaction(async (tx) => {
-  // All operations use tx instead of db
-  const [order] = await tx
-    .insert(orderTable)
-    .values({ userId, total: 0 })
-    .returning();
-
-  await tx.insert(orderItemTable).values(
-    items.map(item => ({
-      orderId: order.id,
-      ...item,
-    }))
-  );
-
-  // Update order total
-  const total = items.reduce((sum, item) => sum + item.price * item.quantity, 0);
-  await tx
-    .update(orderTable)
-    .set({ total })
-    .where(eq(orderTable.id, order.id));
-
-  return order;
-});
-```
-
-### Transaction with Rollback
-
-```typescript
-try {
-  await db.transaction(async (tx) => {
-    await tx.insert(orderTable).values(orderData);
-
-    // This will cause rollback if payment fails
-    const paymentResult = await processPayment(orderData.total);
-    if (!paymentResult.success) {
-      throw new Error("Payment failed");
-    }
-
-    await tx.update(orderTable)
-      .set({ paymentId: paymentResult.id })
-      .where(eq(orderTable.id, orderData.id));
-  });
-} catch (error) {
-  // Transaction automatically rolled back
-  logger.error("Order creation failed", { error });
-}
-```
-
-## Query Performance Tips
-
-### Use Indexes
-
-Ensure your queries use appropriate indexes:
-
-```typescript
-// Good for index on (userId, createdAt DESC)
-const recentOrders = await db
-  .select()
-  .from(orderTable)
-  .where(eq(orderTable.userId, userId))
-  .orderBy(desc(orderTable.createdAt))
-  .limit(10);
-```
-
-### Select Only Needed Columns
-
-```typescript
-// BAD - Selects all columns including large text fields
-const orders = await db.select().from(orderTable);
-
-// GOOD - Select only needed columns
-const orders = await db
-  .select({
-    id: orderTable.id,
-    status: orderTable.status,
-    total: orderTable.total,
-  })
-  .from(orderTable);
-```
-
-### Use Relations for Complex Queries
-
-```typescript
-// Using Drizzle relations for nested data
-const ordersWithDetails = await db.query.order.findMany({
-  where: eq(orderTable.userId, userId),
-  with: {
-    items: {
-      with: {
-        product: true,
-      },
-    },
-    customer: {
-      columns: {
-        id: true,
-        name: true,
-        email: true,
-      },
-    },
-  },
-  orderBy: (orders, { desc }) => desc(orders.createdAt),
-  limit: 20,
-});
+#### Correct
+```sql
+SELECT id, name, image_url, prompt, model, aspect_ratio, resolution, quantity, type
+FROM smart_templates
+WHERE is_enabled = 1 AND type = :type
+ORDER BY sort_order ASC, created_at DESC;
 ```

@@ -1,351 +1,64 @@
-# AI SDK Backend Integration Guidelines
+﻿# LangChain Integration
 
-## 1. Overview
+This backend uses Python LangChain for AI workflow orchestration. It does not use the Vercel AI SDK.
 
-This document covers backend integration patterns using the Vercel AI SDK (`ai` package) for AI-powered features.
+## Placement
 
-### Supported Providers
-- **OpenAI**: GPT-4o, GPT-4o-mini, GPT-4-turbo,GPT-5.5
-- **Google Gemini**: gemini-1.5-pro, gemini-1.5-flash
-- **Anthropic**: Claude 3.5 Sonnet, Claude 3 Opus
+Keep LangChain code behind service modules, for example:
 
-### Package Dependencies
-```bash
-pnpm add ai @ai-sdk/openai @ai-sdk/google @ai-sdk/anthropic
+```text
+app/services/langchain_service.py
+app/services/generation_service.py
 ```
 
-## 2. Basic Usage
-
-### generateText
-
-Use `generateText` for simple text generation tasks where you need a complete response.
-
-```typescript
-import { generateText } from "ai";
-import { openai } from "@ai-sdk/openai";
-
-const { text } = await generateText({
-  model: openai("gpt-4o-mini"),
-  prompt: "Summarize this document...",
-});
-```
-
-### generateObject (Structured Output with Zod)
-
-Use `generateObject` when you need type-safe structured output. The AI SDK validates the response against your Zod schema automatically.
-
-```typescript
-import { generateObject } from "ai";
-import { openai } from "@ai-sdk/openai";
-import { z } from "zod";
-
-const classificationSchema = z.object({
-  category: z.enum(["urgent", "normal", "low"]),
-  confidence: z.number().min(0).max(1),
-  reasoning: z.string(),
-});
-
-const { object } = await generateObject({
-  model: openai("gpt-4o-mini"),
-  schema: classificationSchema,
-  prompt: "Classify the priority of this task...",
-});
-// object is typed as { category: "urgent" | "normal" | "low", confidence: number, reasoning: string }
-```
-
-### streamText (For SSE/Streaming)
-
-Use `streamText` for real-time streaming responses, ideal for chat interfaces and long-form content generation.
-
-```typescript
-import { streamText } from "ai";
-import { openai } from "@ai-sdk/openai";
-
-const result = streamText({
-  model: openai("gpt-4o"),
-  messages: conversationHistory,
-  system: "You are a helpful assistant.",
-});
-
-// Return as SSE stream
-return result.toDataStreamResponse();
-```
-
-## 3. Telemetry Configuration
-
-**IMPORTANT**: Always enable telemetry for token tracking and performance monitoring.
-
-```typescript
-import { generateObject } from "ai";
-import { openai } from "@ai-sdk/openai";
-
-const { object } = await generateObject({
-  model: openai("gpt-4o-mini"),
-  schema: mySchema,
-  prompt,
-  experimental_telemetry: {
-    isEnabled: true,
-    functionId: "orders.classify",  // Module.function naming
-    metadata: {
-      orderId,
-      userId,
-    },
-  },
-});
-```
-
-### Telemetry Naming Convention
-
-Use dot-separated format for `functionId`: `module.function`
-
-| Module | Example functionId |
-|--------|-------------------|
-| Orders | `orders.classify`, `orders.summarize` |
-| Support | `support.generateReply`, `support.categorize` |
-| Content | `content.summarize`, `content.translate` |
-| Users | `users.analyzePreferences` |
-
-### Auto-recorded Metrics
-
-When telemetry is enabled, these metrics are automatically tracked:
-
-| Metric | Description |
-|--------|-------------|
-| `ai.model.id` | Model identifier (e.g., gpt-4o-mini) |
-| `ai.model.provider` | Provider name (e.g., openai) |
-| `ai.usage.prompt_tokens` | Input tokens consumed |
-| `ai.usage.completion_tokens` | Output tokens generated |
-| `ai.usage.total_tokens` | Total tokens used |
-| `ai.response.finish_reason` | Completion reason (stop, length, etc.) |
-
-## 4. Tool Calling
-
-Define tools that the AI model can invoke to perform actions in your system.
-
-```typescript
-import { generateText, tool } from "ai";
-import { openai } from "@ai-sdk/openai";
-import { z } from "zod";
-
-const result = await generateText({
-  model: openai("gpt-4o"),
-  prompt: "Create a task for the user...",
-  tools: {
-    createTask: tool({
-      description: "Create a new task in the system",
-      parameters: z.object({
-        title: z.string(),
-        dueDate: z.string().optional(),
-        priority: z.enum(["high", "medium", "low"]),
-      }),
-      execute: async ({ title, dueDate, priority }) => {
-        const task = await db.insert(tasks).values({
-          title,
-          dueDate: dueDate ? new Date(dueDate) : null,
-          priority,
-        }).returning();
-        return { success: true, taskId: task[0].id };
-      },
-    }),
-    searchOrders: tool({
-      description: "Search for orders by criteria",
-      parameters: z.object({
-        query: z.string(),
-        status: z.enum(["pending", "completed", "cancelled"]).optional(),
-        limit: z.number().default(10),
-      }),
-      execute: async ({ query, status, limit }) => {
-        const orders = await db.query.orders.findMany({
-          where: and(
-            like(orders.title, `%${query}%`),
-            status ? eq(orders.status, status) : undefined
-          ),
-          limit,
-        });
-        return { orders };
-      },
-    }),
-  },
-});
-
-// Access tool results
-if (result.toolCalls) {
-  for (const toolCall of result.toolCalls) {
-    console.log(`Tool: ${toolCall.toolName}`, toolCall.result);
-  }
-}
-```
-
-## 5. Error Handling
-
-Always implement graceful error handling for AI operations.
-
-```typescript
-import { generateObject } from "ai";
-import { openai } from "@ai-sdk/openai";
-import { logger } from "@your-app/logs";
-
-async function classifyOrder(orderData: OrderData) {
-  try {
-    const { object } = await generateObject({
-      model: openai("gpt-4o-mini"),
-      schema: classificationSchema,
-      prompt: buildClassificationPrompt(orderData),
-      experimental_telemetry: {
-        isEnabled: true,
-        functionId: "orders.classify",
-      },
-    });
-    return { success: true, data: object };
-  } catch (error) {
-    logger.error("AI generation failed", {
-      error,
-      orderId: orderData.id,
-      prompt: buildClassificationPrompt(orderData).slice(0, 100)
-    });
-
-    // Return graceful fallback
-    return {
-      success: false,
-      reason: "AI processing failed",
-      error: error instanceof Error ? error.message : "Unknown error",
-    };
-  }
-}
-```
-
-### Common Error Types
-
-| Error | Cause | Resolution |
-|-------|-------|------------|
-| Rate limit exceeded | Too many requests | Implement exponential backoff |
-| Context length exceeded | Prompt too long | Truncate or summarize input |
-| Invalid API key | Missing/wrong credentials | Check environment variables |
-| Schema validation failed | AI output doesn't match schema | Adjust schema or prompt |
-
-## 6. Prompt Engineering Best Practices
-
-### Use XML Structure for Complex Prompts
-
-XML tags help the AI model better understand the structure of your request.
-
-```typescript
-const prompt = `
-<context>
-${contextData}
-</context>
-
-<task>
-Analyze the above context and extract key information.
-</task>
-
-<output_format>
-Return a JSON object with the following fields:
-- summary: A brief summary
-- keyPoints: Array of key points
-- sentiment: positive, negative, or neutral
-</output_format>
-`;
-```
-
-### System Prompts
-
-Define consistent behavior with system prompts.
-
-```typescript
-import { generateText } from "ai";
-import { openai } from "@ai-sdk/openai";
-
-const result = await generateText({
-  model: openai("gpt-4o"),
-  system: `You are a professional assistant.
-Always respond in a structured format.
-Be concise and accurate.
-Never make up information - if unsure, say so.`,
-  messages: userMessages,
-});
-```
-
-### Multi-step Prompts
-
-For complex tasks, break down into multiple AI calls.
-
-```typescript
-// Step 1: Extract entities
-const { object: entities } = await generateObject({
-  model: openai("gpt-4o-mini"),
-  schema: entitiesSchema,
-  prompt: `Extract entities from: ${document}`,
-});
-
-// Step 2: Classify based on entities
-const { object: classification } = await generateObject({
-  model: openai("gpt-4o-mini"),
-  schema: classificationSchema,
-  prompt: `
-<entities>
-${JSON.stringify(entities, null, 2)}
-</entities>
-
-<task>
-Based on these entities, classify the document category.
-</task>
-`,
-});
-```
-
-## 7. Provider-Specific Configuration
-
-### OpenAI
-
-```typescript
-import { openai } from "@ai-sdk/openai";
-
-const model = openai("gpt-5.5", {
-  // Optional: custom configuration
-});
-```
-
-### Google Gemini
-
-```typescript
-import { google } from "@ai-sdk/google";
-
-const model = google("gemini-1.5-flash");
-```
-
-### Anthropic
-
-```typescript
-import { anthropic } from "@ai-sdk/anthropic";
-
-const model = anthropic("claude-3-5-sonnet-20241022");
-```
-
-## 8. Best Practices Summary
-
-| Rule | Description |
-|------|-------------|
-| Always enable telemetry | Track token usage and performance for cost monitoring |
-| Use generateObject for structured output | Leverage Zod schemas for type safety and validation |
-| Use XML prompts for complex tasks | Better structure improves AI understanding |
-| Handle errors gracefully | Return fallback responses, never crash |
-| Log AI failures | Include context (truncated prompt, IDs) for debugging |
-| Use appropriate model sizes | Use mini models for simple tasks, larger for complex |
-| Implement rate limiting | Protect against API quota exhaustion |
-| Cache responses when appropriate | Reduce costs for repeated queries |
-
-## 9. Environment Variables
-
-Required environment variables for AI providers:
-
-```bash
-# OpenAI
-OPENAI_API_KEY=sk-...
-
-# Google Gemini
-GOOGLE_GENERATIVE_AI_API_KEY=...
-
-# Anthropic
-ANTHROPIC_API_KEY=sk-ant-...
-```
+FastAPI route functions should call services and should not contain prompt construction, provider client setup, or chain orchestration directly.
+
+## Configuration
+
+Provider names, model ids, API keys, timeouts, and feature flags must come from environment-backed settings in `app/core/config.py`.
+
+Do not commit provider keys.
+
+## Generation Workflow
+
+Expected flow for AI product image generation:
+
+1. Validate request and uploaded/source image metadata.
+2. Persist a generation job with `pending` status.
+3. Build a prompt from product/category/config data.
+4. Invoke LangChain/provider code through a service.
+5. Store generated image URLs/metadata.
+6. Update job status to `succeeded`, `failed`, or `partial_failed`.
+7. Return stable JSON for frontend polling/result rendering.
+
+## Prompt Rules
+
+- Keep prompt templates in service/helper files, not route functions.
+- Version important prompts when output behavior matters.
+- Keep user prompt text separate from system/instruction prompt text.
+- Validate prompt length before invoking providers.
+- Log only truncated prompt excerpts when needed.
+
+## Error Handling
+
+Handle provider failures explicitly:
+
+- rate limit
+- timeout
+- invalid credentials
+- content policy rejection
+- malformed provider response
+- storage failure after generation
+
+Map these to stable backend job statuses and client-safe error messages.
+
+## Retries
+
+Use bounded retries with backoff for transient provider/network failures. Do not retry validation errors or policy rejections.
+
+## Avoid
+
+- Do not put API keys in frontend code.
+- Do not import JavaScript AI SDK patterns into this Python backend.
+- Do not block the Uvicorn event loop with long synchronous provider calls without offloading.
+- Do not store large base64 image payloads in MySQL or Redis unless there is a documented reason.
