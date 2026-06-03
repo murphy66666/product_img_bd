@@ -25,6 +25,54 @@ Acceptable approaches:
 
 Do not store secrets in frontend code or repository files.
 
+## Scenario: Development JWT Session Recovery
+
+### 1. Scope / Trigger
+- Trigger: Protected API polling can happen after long-running generation jobs. In development, Redis may be unavailable and Uvicorn reloads can clear the process-local token store while the JWT is still valid.
+
+### 2. Signatures
+- Dependency: `get_current_user(token: str, service: AuthService) -> UserProfile`
+- Token store methods: `validate_and_refresh(token, user_id)`, `save(token, user_id)`, `is_revoked(token)`
+- Environment gate: `APP_ENV != "production"` permits recovery; production requires the server-side token store.
+
+### 3. Contracts
+- JWT signature and `exp` must validate before any fallback recovery.
+- If `token_store.validate_and_refresh()` fails in non-production and `token_store.is_revoked(token)` is false, re-save the token and continue.
+- If the token was revoked through logout in the current process, recovery must not happen.
+- In production, missing Redis/session-store records must remain `401 Invalid or expired authentication token`.
+
+### 4. Validation & Error Matrix
+- Valid JWT + missing local token store + development -> restore token store and return current user.
+- Valid JWT + revoked token -> `401 Invalid or expired authentication token`.
+- Valid JWT + missing token store + production -> `401 Invalid or expired authentication token`.
+- Invalid JWT signature or expired JWT -> `401 Invalid authentication token`.
+
+### 5. Good/Base/Bad Cases
+- Good: A generation job finishes after a local reload, and `GET /api/v1/generation/jobs/{job_id}` can still return the job while the JWT is valid.
+- Base: User logs out and the same token is rejected in the same process.
+- Bad: The frontend sees generated images from the provider but cannot poll the saved job because only the process-local token cache was lost.
+
+### 6. Tests Required
+- Route test clearing `_LOCAL_TOKENS` after login must still allow `/api/v1/auth/me` in development and repopulate the local token store.
+- Logout invalidation test must verify revoked tokens still return `401`.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+```python
+if not await token_store.validate_and_refresh(token, user_id):
+    raise HTTPException(status_code=401, detail="Invalid or expired authentication token")
+```
+
+#### Correct
+```python
+if not await token_store.validate_and_refresh(token, user_id):
+    if settings.app_env != "production" and not token_store.is_revoked(token):
+        await token_store.save(token, user_id)
+    else:
+        raise HTTPException(status_code=401, detail="Invalid or expired authentication token")
+```
+
 ## Password Handling
 
 - Never store plain-text passwords.

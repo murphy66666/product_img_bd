@@ -20,6 +20,7 @@ If another MySQL library is chosen, update this file with the concrete session, 
 
 - Read database URL from environment, not source code.
 - Use MySQL in development/test unless a test-only substitute is explicitly documented.
+- Force MySQL client connections to `charset=utf8mb4`; do not rely on server or workstation defaults.
 - Create database engines and pools during app startup/lifespan, not at import time.
 - Use dependency providers for sessions.
 - Close sessions and connections reliably.
@@ -70,6 +71,48 @@ For delete/clear operations:
 - Write an operation log/audit row where applicable.
 - Prefer soft delete for user-visible generated assets unless hard delete is explicitly required.
 - Provide a rollback or restoration plan.
+
+## Scenario: UTF-8 Database Boundary
+
+### 1. Scope / Trigger
+- Trigger: Any backend change that reads or writes multilingual text through MySQL, migrations, or JSON APIs.
+
+### 2. Signatures
+- Connection helper: `app.db.mysql.mysql_utf8mb4_url(database_url: str) -> str`
+- SQL session bootstrap: `SET NAMES utf8mb4 COLLATE utf8mb4_0900_ai_ci;`
+- Table defaults: `ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci`
+
+### 3. Contracts
+- MySQL SQLAlchemy URLs must resolve to a URL containing `charset=utf8mb4`.
+- Non-MySQL URLs are not production defaults and must not be introduced as a silent fallback.
+- SQL migrations that create text-bearing tables must declare `utf8mb4` table defaults.
+
+### 4. Validation & Error Matrix
+- Missing MySQL charset in `DATABASE_URL` -> helper adds `charset=utf8mb4` before engine creation.
+- Existing `charset=utf8mb4` -> helper preserves a single charset parameter.
+- Migration without `utf8mb4` defaults -> reject during review before applying to MySQL.
+
+### 5. Good/Base/Bad Cases
+- Good: `mysql+aiomysql://user:pass@host/db` becomes `...?charset=utf8mb4` at engine creation.
+- Base: `mysql+aiomysql://user:pass@host/db?charset=utf8mb4` remains unchanged.
+- Bad: `mysql+aiomysql://user:pass@host/db?charset=gbk` is accepted into production.
+
+### 6. Tests Required
+- Unit test for adding `charset=utf8mb4` to a MySQL URL.
+- Unit test for preserving an existing `charset=utf8mb4`.
+- Source scan test confirming backend text sources decode with `encoding="utf-8"`.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+```python
+create_async_engine(settings.database_url)
+```
+
+#### Correct
+```python
+create_async_engine(mysql_utf8mb4_url(settings.database_url))
+```
 
 ## Scenario: Demo User Data Removal
 

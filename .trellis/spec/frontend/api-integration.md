@@ -28,6 +28,8 @@ Keep the component flow stable:
 4. Map the response back into `ChatMessage`, `GeneratedImage`, or a store action input.
 5. Persist through Pinia actions.
 
+All JSON requests must send `Content-Type: application/json; charset=UTF-8`. Do not use GBK, GB2312, or workstation-local encodings at the API boundary.
+
 ## Error Handling
 
 - Surface user-facing failures with Ant Design Vue `message.error` or an inline error state.
@@ -48,6 +50,47 @@ Stable frontend concepts that backend responses should map to:
 - Generated image URLs and metadata
 
 Do not change JSON response shape casually once the backend and frontend are connected; project rules require stable JSON interfaces for other systems.
+
+## Scenario: UTF-8 API Boundary
+
+### 1. Scope / Trigger
+- Trigger: Any frontend API client change that sends JSON to the FastAPI backend.
+
+### 2. Signatures
+- API client: `src/api/client.ts`
+- Request header: `Content-Type: application/json; charset=UTF-8`
+- Backend response header: `Content-Type: application/json; charset=utf-8`
+
+### 3. Contracts
+- `FormData` uploads must let the browser set multipart boundaries and must not force a JSON content type.
+- JSON request bodies must explicitly declare UTF-8.
+- API response parsing assumes backend JSON is UTF-8 and uses the stable `{ success, data, message }` envelope.
+
+### 4. Validation & Error Matrix
+- JSON request missing charset -> update `src/api/client.ts` before adding endpoint-specific callers.
+- Upload request with forced JSON content type -> backend cannot parse multipart and must be fixed in the client.
+- Backend returns non-JSON or malformed JSON -> client raises `ApiError`.
+
+### 5. Good/Base/Bad Cases
+- Good: `request('/sessions', { method: 'POST', body: JSON.stringify(payload) })` sends UTF-8 JSON.
+- Base: `request('/uploads', { method: 'POST', body: formData })` leaves multipart headers to the browser.
+- Bad: Endpoint code calls `fetch()` directly and sends `application/json` without `charset=UTF-8`.
+
+### 6. Tests Required
+- Frontend `npm run build` must pass after API client changes.
+- Backend route test should assert JSON response content type includes `charset=utf-8`.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+```ts
+headers.set('Content-Type', 'application/json')
+```
+
+#### Correct
+```ts
+headers.set('Content-Type', 'application/json; charset=UTF-8')
+```
 
 ## Scenario: New Chat Session Route and API
 
@@ -103,6 +146,53 @@ if (this.isApiBacked) {
 Current uploads use `FileReader.readAsDataURL()` and store a base64 data URL in the active session. A real backend upload should move large image bytes out of localStorage and return either a URL or file id.
 
 Avoid storing large base64 strings in persistent browser state after backend uploads are available.
+
+## Scenario: GPT Image 2 Edit-Image Generation
+
+### 1. Scope / Trigger
+- Trigger: Generation uses uploaded product/reference images and the backend calls an OpenAI-compatible `/images/edits` provider endpoint.
+
+### 2. Signatures
+- Upload API: `POST /api/v1/uploads/images`
+- Generation API: `POST /api/v1/generation/jobs`
+- Frontend request fields: `model`, `prompt`, `sourceImageIds`, `size`, `quality`, `n`, `outputFormat`, `stream`, `sessionId`.
+
+### 3. Contracts
+- `model` is `gpt-image-2` for this flow.
+- The browser uploads files first and stores backend upload IDs, not local filesystem paths.
+- `sourceImageIds` must be non-empty before starting generation.
+- `outputFormat` is camelCase in frontend JSON and maps to provider `output_format` in the backend.
+- Gallery displays backend local generated image URLs, not provider OSS URLs.
+
+### 4. Validation & Error Matrix
+- No uploaded source image -> show a user-visible warning and do not call generation API.
+- Upload API failure -> use local preview only for display; do not submit a provider edit job without an upload ID.
+- Backend returns `401` -> logout or re-login flow.
+- Backend generation failure -> clear `isGenerating` in `finally`, remove any loading message, and show the real error. Do not synthesize local demo images after a submitted backend generation job fails.
+
+### 5. Good/Base/Bad Cases
+- Good: User uploads three images, frontend submits three upload IDs, and result images render from local backend public URLs.
+- Base: Provider returns fewer images than requested; frontend renders the returned images and message uses actual image count.
+- Bad: Frontend sends `C:\Users\...` paths or stores large base64 source images in persistent session state.
+- Bad: Backend generation returns `failed`, times out, or rejects provider config, and the frontend fills the result grid with local Unsplash/demo images.
+
+### 6. Tests Required
+- `npm run build` must pass.
+- Manual UI smoke test should cover multi-image upload, payload shape, generation polling, and gallery rendering.
+- Regression check should confirm failed generation displays an error message and does not call local mock/demo image builders.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+```ts
+await createGenerationJobApi({ sourceImageUrl: file.name })
+```
+
+#### Correct
+```ts
+const image = await uploadImageApi(file)
+await createGenerationJobApi({ sourceImageIds: [image.id], outputFormat: 'png' })
+```
 
 ## Scenario: Smart Templates API
 

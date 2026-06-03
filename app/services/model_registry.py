@@ -1,14 +1,14 @@
 ﻿from app.schemas.generation import ModelCapability
 
 _MODEL_CAPABILITIES: dict[str, ModelCapability] = {
-    "gpt-images-2": ModelCapability(
+    "gpt-image-2": ModelCapability(
         provider="openai",
-        model="gpt-images-2",
-        providerModelId="gpt-images-2",
+        model="gpt-image-2",
+        providerModelId="gpt-image-2",
         displayName="GPT Images 2",
-        supportedAspectRatios=["1:1", "3:4", "4:3", "9:16", "16:9"],
-        supportedResolutions=["1k", "2k", "3k", "4k"],
-        maxQuantity=4,
+        supportedAspectRatios=["1:1"],
+        supportedResolutions=["1024x1024"],
+        maxQuantity=8,
         supportsImageInput=True,
         requiresAsyncPolling=False,
     ),

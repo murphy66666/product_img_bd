@@ -4,6 +4,7 @@ from app.schemas.common import CamelModel
 
 
 class UploadedImage(CamelModel):
+    id: str
     url: str
     filename: str
     content_type: str = Field(alias="contentType")

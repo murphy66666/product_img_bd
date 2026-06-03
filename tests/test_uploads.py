@@ -24,6 +24,7 @@ def test_upload_image_saves_to_storage() -> None:
 
     assert response.status_code == 200
     image = response.json()["data"]["image"]
+    assert image["id"] == image["filename"]
     assert image["url"].startswith("/storage/app/pic/")
     stored = Path("storage/app/pic") / image["filename"]
     assert stored.exists()

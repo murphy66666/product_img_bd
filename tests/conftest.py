@@ -2,7 +2,6 @@ import pytest
 
 from app.services.auth_service import AuthService
 
-
 ADMIN_USER = {
     "id": "admin",
     "phone": "admin",

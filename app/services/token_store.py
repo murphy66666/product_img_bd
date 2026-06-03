@@ -45,6 +45,9 @@ class TokenStore:
         await self._with_redis("delete", self._key(token))
         _LOCAL_TOKENS.pop(token, None)
 
+    def is_revoked(self, token: str) -> bool:
+        return token in _REVOKED_TOKENS
+
     async def _with_redis(self, command: str, *args: object) -> object | None:
         client = get_redis_client()
         try:

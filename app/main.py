@@ -9,6 +9,7 @@ from app.api.v1.router import api_router
 from app.cache.redis import close_redis_client
 from app.core.config import get_settings
 from app.core.logging import configure_logging
+from app.core.responses import UTF8JSONResponse
 from app.db.mysql import mysql_sessions
 from app.services.generation_queue import start_generation_queue, stop_generation_queue
 
@@ -25,7 +26,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 def create_app() -> FastAPI:
     settings = get_settings()
-    app = FastAPI(title=settings.app_name, version="0.1.0", lifespan=lifespan)
+    app = FastAPI(
+        title=settings.app_name,
+        version="0.1.0",
+        lifespan=lifespan,
+        default_response_class=UTF8JSONResponse,
+    )
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origin_list,

@@ -18,7 +18,7 @@ def test_list_models() -> None:
     assert response.status_code == 200
     body = response.json()
     models = {item["model"] for item in body["data"]["models"]}
-    assert {"gpt-images-2", "gemini-banana", "jimeng", "happyhouse"}.issubset(models)
+    assert {"gpt-image-2", "gemini-banana", "jimeng", "happyhouse"}.issubset(models)
 
 
 def test_list_provider_statuses_masks_keys() -> None:
@@ -30,14 +30,14 @@ def test_list_provider_statuses_masks_keys() -> None:
 
     assert body["success"] is True
     assert {item["model"] for item in providers} == {
-        "gpt-images-2",
+        "gpt-image-2",
         "gemini-banana",
         "jimeng",
         "happyhouse",
     }
     assert all("apiKeyConfigured" in item for item in providers)
     assert all("apiKeyPreview" in item for item in providers)
-    assert all(item["implementation"] == "mock" for item in providers)
+    assert all(item["implementation"] in {"mock", "real"} for item in providers)
 
 
 def test_create_generation_job() -> None:
@@ -63,3 +63,31 @@ def test_create_generation_job() -> None:
     assert job["status"] == "pending"
     assert job["model"] == "gemini-banana"
     assert job["images"] == []
+
+
+def test_create_openai_edit_generation_job_normalizes_payload() -> None:
+    client = TestClient(app)
+    payload = {
+        "model": "gpt-image-2",
+        "category": "detail",
+        "prompt": "Create three ecommerce detail images from the uploaded references",
+        "sourceImageIds": ["sample.png"],
+        "size": "1024x1024",
+        "quality": "high",
+        "n": 3,
+        "outputFormat": "png\n",
+        "stream": False,
+    }
+    response = client.post(
+        "/api/v1/generation/jobs",
+        json=payload,
+        headers=auth_headers(client),
+    )
+    assert response.status_code == 200
+    job = response.json()["data"]["job"]
+    assert job["model"] == "gpt-image-2"
+    assert job["size"] == "1024x1024"
+    assert job["quantity"] == 3
+    assert job["n"] == 3
+    assert job["outputFormat"] == "png"
+    assert job["sourceImageIds"] == ["sample.png"]

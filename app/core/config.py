@@ -35,6 +35,7 @@ class Settings(BaseSettings):
     alibaba_happyhouse_base_url: str | None = None
     provider_timeout_seconds: int = Field(default=600, ge=1)
     provider_max_retries: int = Field(default=2, ge=0)
+    generated_image_storage_dir: str = "storage/gen_image"
 
     @property
     def cors_origin_list(self) -> list[str]:

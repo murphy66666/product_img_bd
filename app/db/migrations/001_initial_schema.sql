@@ -1,5 +1,7 @@
 ﻿-- MySQL 8+ initial schema for product image generation backend.
 
+SET NAMES utf8mb4 COLLATE utf8mb4_0900_ai_ci;
+
 CREATE TABLE users (
   id VARCHAR(64) PRIMARY KEY,
   phone VARCHAR(32) NOT NULL UNIQUE,

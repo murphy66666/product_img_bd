@@ -12,6 +12,7 @@ from app.schemas.generation import GenerationJob
 from app.schemas.session import ChatMessage, ChatSession, SessionConfig
 from app.schemas.template import SmartTemplate, SmartTemplateType
 from app.services.clock import now_text
+from app.services.providers.base import ProviderResult
 
 
 class MySQLRepository:
@@ -209,6 +210,7 @@ class MySQLRepository:
         session_id: str | None,
         provider: str,
         images: list[GeneratedImage],
+        source_image_ids: list[str] | None = None,
     ) -> None:
         try:
             async for db in mysql_sessions.session():
@@ -218,11 +220,15 @@ class MySQLRepository:
                             """
                             INSERT INTO generated_images (
                               id, job_id, user_id, session_id, url, original_url, prompt,
-                              provider, model, resolution, aspect_ratio, category, tags
+                              provider, model, resolution, aspect_ratio, category, tags,
+                              remote_url, local_path, public_url, storage_date, file_name,
+                              file_ext, mime_type, file_size, checksum_sha256, source_upload_ids
                             )
                             VALUES (
                               :id, :job_id, :user_id, :session_id, :url, :original_url, :prompt,
-                              :provider, :model, :resolution, :aspect_ratio, :category, :tags
+                              :provider, :model, :resolution, :aspect_ratio, :category, :tags,
+                              :remote_url, :local_path, :public_url, :storage_date, :file_name,
+                              :file_ext, :mime_type, :file_size, :checksum_sha256, :source_upload_ids
                             )
                             """
                         ),
@@ -240,6 +246,16 @@ class MySQLRepository:
                             "aspect_ratio": image.aspect_ratio,
                             "category": image.category,
                             "tags": _json(image.tags),
+                            "remote_url": image.remote_url,
+                            "local_path": image.local_path,
+                            "public_url": image.public_url,
+                            "storage_date": _storage_date(image.local_path),
+                            "file_name": _file_name(image.local_path),
+                            "file_ext": _file_ext(image.local_path),
+                            "mime_type": image.mime_type,
+                            "file_size": image.file_size,
+                            "checksum_sha256": image.checksum_sha256,
+                            "source_upload_ids": _json(source_image_ids or []),
                         },
                     )
                 await db.commit()
@@ -255,7 +271,9 @@ class MySQLRepository:
     ) -> tuple[list[GeneratedImage], int]:
         offset = (page - 1) * page_size
         query = """
-            SELECT id, url, original_url, prompt, model, resolution, aspect_ratio,
+            SELECT id, COALESCE(public_url, url) AS url, remote_url, local_path, public_url,
+                   mime_type, file_size, checksum_sha256,
+                   original_url, prompt, model, resolution, aspect_ratio,
                    category, tags, created_at
             FROM generated_images
             WHERE user_id = :user_id AND deleted_at IS NULL
@@ -331,11 +349,15 @@ class MySQLRepository:
                         INSERT INTO generation_jobs (
                           id, user_id, session_id, provider, model, category, status,
                           aspect_ratio, resolution, quantity, prompt, source_image_url, request_payload,
+                          provider_endpoint, provider_request_payload, size, quality, output_format,
+                          stream, requested_count, returned_count, source_upload_ids,
                           error_code, error_message
                         )
                         VALUES (
                           :id, :user_id, :session_id, :provider, :model, :category, :status,
                           :aspect_ratio, :resolution, :quantity, :prompt, :source_image_url, :request_payload,
+                          :provider_endpoint, :provider_request_payload, :size, :quality, :output_format,
+                          :stream, :requested_count, :returned_count, :source_upload_ids,
                           :error_code, :error_message
                         )
                         """
@@ -354,6 +376,15 @@ class MySQLRepository:
                         "prompt": job.prompt,
                         "source_image_url": job.source_image_url,
                         "request_payload": _json(job.model_dump(mode="json", by_alias=True)),
+                        "provider_endpoint": "/images/edits" if job.model == "gpt-image-2" else None,
+                        "provider_request_payload": _json(job.model_dump(mode="json", by_alias=True)),
+                        "size": job.size,
+                        "quality": job.quality,
+                        "output_format": job.output_format,
+                        "stream": job.stream,
+                        "requested_count": job.requested_count,
+                        "returned_count": job.returned_count,
+                        "source_upload_ids": _json(job.source_image_ids),
                         "error_code": job.error_code,
                         "error_message": job.error_message,
                     },
@@ -361,6 +392,73 @@ class MySQLRepository:
                 await db.commit()
         except (SQLAlchemyError, OSError, RuntimeError, AttributeError):
             return
+
+    async def update_job_result(
+        self,
+        *,
+        user_id: str,
+        job_id: str,
+        status: str,
+        provider_result: ProviderResult,
+        requested_count: int,
+        returned_count: int,
+        source_image_ids: list[str],
+        size: str,
+        quality: str,
+        output_format: str,
+        stream: bool,
+    ) -> None:
+        try:
+            async for db in mysql_sessions.session():
+                await db.execute(
+                    text(
+                        """
+                        UPDATE generation_jobs
+                        SET status = :status,
+                            provider_endpoint = :provider_endpoint,
+                            provider_request_payload = :provider_request_payload,
+                            provider_response_payload = :provider_response_payload,
+                            provider_created = :provider_created,
+                            size = :size,
+                            quality = :quality,
+                            output_format = :output_format,
+                            stream = :stream,
+                            requested_count = :requested_count,
+                            returned_count = :returned_count,
+                            source_upload_ids = :source_upload_ids,
+                            total_tokens = :total_tokens,
+                            input_tokens = :input_tokens,
+                            output_tokens = :output_tokens,
+                            input_text_tokens = :input_text_tokens,
+                            input_image_tokens = :input_image_tokens
+                        WHERE id = :job_id AND user_id = :user_id
+                        """
+                    ),
+                    {
+                        "status": status,
+                        "provider_endpoint": provider_result.endpoint,
+                        "provider_request_payload": _json(provider_result.request_payload or {}),
+                        "provider_response_payload": _json(provider_result.response_payload or {}),
+                        "provider_created": provider_result.provider_created,
+                        "size": size,
+                        "quality": quality,
+                        "output_format": output_format,
+                        "stream": stream,
+                        "requested_count": requested_count,
+                        "returned_count": returned_count,
+                        "source_upload_ids": _json(source_image_ids),
+                        "total_tokens": provider_result.total_tokens,
+                        "input_tokens": provider_result.input_tokens,
+                        "output_tokens": provider_result.output_tokens,
+                        "input_text_tokens": provider_result.input_text_tokens,
+                        "input_image_tokens": provider_result.input_image_tokens,
+                        "job_id": job_id,
+                        "user_id": user_id,
+                    },
+                )
+                await db.commit()
+        except (SQLAlchemyError, OSError, RuntimeError, AttributeError):
+            await self.update_job_status(user_id, job_id, status)
 
     async def update_job_status(
         self,
@@ -401,7 +499,9 @@ class MySQLRepository:
                     text(
                         """
                         SELECT id, provider, model, category, status, aspect_ratio, resolution,
-                               quantity, prompt, source_image_url, error_code, error_message,
+                               quantity, prompt, source_image_url, source_upload_ids, size,
+                               quality, output_format, stream, requested_count, returned_count,
+                               error_code, error_message,
                                created_at, updated_at
                         FROM generation_jobs
                         WHERE id = :job_id AND user_id = :user_id
@@ -424,7 +524,9 @@ class MySQLRepository:
             result = await db.execute(
                 text(
                     """
-                    SELECT id, url, original_url, prompt, model, resolution, aspect_ratio,
+                    SELECT id, COALESCE(public_url, url) AS url, remote_url, local_path, public_url,
+                           mime_type, file_size, checksum_sha256,
+                           original_url, prompt, model, resolution, aspect_ratio,
                            category, tags, created_at
                     FROM generated_images
                     WHERE user_id = :user_id AND job_id = :job_id AND deleted_at IS NULL
@@ -516,6 +618,12 @@ def _image_from_row(row: object) -> GeneratedImage:
     return GeneratedImage(
         id=row["id"],
         url=row["url"],
+        remoteUrl=_optional_row_value(row, "remote_url"),
+        localPath=_optional_row_value(row, "local_path"),
+        publicUrl=_optional_row_value(row, "public_url"),
+        mimeType=_optional_row_value(row, "mime_type"),
+        fileSize=_optional_row_value(row, "file_size"),
+        checksumSha256=_optional_row_value(row, "checksum_sha256"),
         originalUrl=row["original_url"] or "",
         prompt=row["prompt"],
         model=row["model"],
@@ -564,6 +672,14 @@ def _job_from_row(row: object, images: list[GeneratedImage]) -> GenerationJob:
         quantity=row["quantity"],
         prompt=row["prompt"],
         sourceImageUrl=row["source_image_url"] or "",
+        sourceImageIds=_loads(_optional_row_value(row, "source_upload_ids"), []),
+        size=_optional_row_value(row, "size") or row["resolution"],
+        quality=_optional_row_value(row, "quality") or "high",
+        n=row["quantity"],
+        outputFormat=_optional_row_value(row, "output_format") or "png",
+        stream=bool(_optional_row_value(row, "stream") or False),
+        requestedCount=_optional_row_value(row, "requested_count"),
+        returnedCount=_optional_row_value(row, "returned_count"),
         createdAt=_time_text(row["created_at"]),
         updatedAt=_time_text(row["updated_at"]),
         images=images,
@@ -571,6 +687,33 @@ def _job_from_row(row: object, images: list[GeneratedImage]) -> GenerationJob:
         errorCode=row["error_code"],
         errorMessage=row["error_message"],
     )
+
+
+def _optional_row_value(row: object, key: str) -> object | None:
+    try:
+        return row[key]
+    except KeyError:
+        return None
+
+
+def _storage_date(local_path: str | None) -> str | None:
+    if not local_path:
+        return None
+    parts = local_path.replace("\\", "/").split("/")
+    return parts[-2] if len(parts) >= 2 else None
+
+
+def _file_name(local_path: str | None) -> str | None:
+    if not local_path:
+        return None
+    return local_path.replace("\\", "/").split("/")[-1]
+
+
+def _file_ext(local_path: str | None) -> str | None:
+    file_name = _file_name(local_path)
+    if not file_name or "." not in file_name:
+        return None
+    return file_name.rsplit(".", 1)[-1]
 
 
 def _sessions_from_rows(rows: list[object]) -> list[ChatSession]:

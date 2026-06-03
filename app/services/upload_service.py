@@ -36,11 +36,21 @@ class UploadService:
         await asyncio.to_thread(target.write_bytes, content)
 
         return UploadedImage(
+            id=filename,
             url=f"/storage/app/pic/{filename}",
             filename=filename,
             contentType=file.content_type,
             size=len(content),
         )
+
+    def resolve_image_path(self, image_id: str) -> Path | None:
+        filename = Path(image_id).name
+        if filename != image_id:
+            return None
+        target = STORAGE_ROOT / filename
+        if not target.is_file():
+            return None
+        return target
 
 
 def get_upload_service() -> UploadService:
